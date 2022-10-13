@@ -302,7 +302,8 @@ std::vector<snark::FeatureMeta> ExtractFeatureInfo(Feature *features, size_t fea
     return features_info;
 }
 
-int32_t GetNodeType(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Type *output, Type default_type)
+int32_t GetNodeType(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Timestamp *timestamps, Type *output,
+                    Type default_type)
 {
     if (py_graph->graph == nullptr)
     {
@@ -311,7 +312,7 @@ int32_t GetNodeType(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, T
     }
     if (py_graph->graph->graph)
     {
-        py_graph->graph->graph->GetNodeType(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+        py_graph->graph->graph->GetNodeType(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size), {},
                                             std::span(reinterpret_cast<snark::Type *>(output), node_ids_size),
                                             default_type);
         return 0;
@@ -319,7 +320,7 @@ int32_t GetNodeType(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, T
 
     try
     {
-        py_graph->graph->client->GetNodeType(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+        py_graph->graph->client->GetNodeType(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size), {},
                                              std::span(reinterpret_cast<snark::Type *>(output), node_ids_size),
                                              default_type);
         return 0;
@@ -331,8 +332,8 @@ int32_t GetNodeType(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, T
     }
 }
 
-int32_t GetNodeFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Feature *features,
-                       size_t features_size, uint8_t *output, size_t output_size)
+int32_t GetNodeFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Timestamp *timestamps,
+                       Feature *features, size_t features_size, uint8_t *output, size_t output_size)
 {
     if (py_graph->graph == nullptr)
     {
@@ -343,16 +344,19 @@ int32_t GetNodeFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size
     auto features_info = ExtractFeatureInfo(features, features_size);
     if (py_graph->graph->graph)
     {
-        py_graph->graph->graph->GetNodeFeature(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
-                                               std::span(features_info), std::span(output, output_size));
+        py_graph->graph->graph->GetNodeFeature(
+            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size), std::span(features_info),
+            std::span(output, output_size));
         return 0;
     }
 
     try
     {
-        py_graph->graph->client->GetNodeFeature(std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
-                                                std::span(features_info),
-                                                std::span(reinterpret_cast<uint8_t *>(output), output_size));
+        py_graph->graph->client->GetNodeFeature(
+            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size), std::span(features_info),
+            std::span(reinterpret_cast<uint8_t *>(output), output_size));
         return 0;
     }
     catch (const std::exception &e)
@@ -362,8 +366,8 @@ int32_t GetNodeFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size
     }
 }
 
-int32_t GetNodeSparseFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Feature *features,
-                             size_t features_size, GetSparseFeaturesCallback callback)
+int32_t GetNodeSparseFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Timestamp *timestamps,
+                             Feature *features, size_t features_size, GetSparseFeaturesCallback callback)
 {
     if (py_graph->graph == nullptr)
     {
@@ -378,8 +382,9 @@ int32_t GetNodeSparseFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
     if (py_graph->graph->graph)
     {
         py_graph->graph->graph->GetNodeSparseFeature(
-            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size), std::span(features, features_size),
-            std::span(dimensions), indices, data);
+            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size),
+            std::span(features, features_size), std::span(dimensions), indices, data);
     }
     else
     {
@@ -387,6 +392,7 @@ int32_t GetNodeSparseFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
         {
             py_graph->graph->client->GetNodeSparseFeature(
                 std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+                std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size),
                 std::span(features, features_size), std::span(dimensions), indices, data);
         }
         catch (const std::exception &e)
@@ -414,8 +420,9 @@ int32_t GetNodeSparseFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
     return 0;
 }
 
-int32_t GetNodeStringFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Feature *features,
-                             size_t features_size, int64_t *dimensions, GetStringFeaturesCallback callback)
+int32_t GetNodeStringFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_ids_size, Timestamp *timestamps,
+                             Feature *features, size_t features_size, int64_t *dimensions,
+                             GetStringFeaturesCallback callback)
 {
     if (py_graph->graph == nullptr)
     {
@@ -427,8 +434,9 @@ int32_t GetNodeStringFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
     if (py_graph->graph->graph)
     {
         py_graph->graph->graph->GetNodeStringFeature(
-            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size), std::span(features, features_size),
-            std::span(dimensions, node_ids_size * features_size), data);
+            std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size),
+            std::span(features, features_size), std::span(dimensions, node_ids_size * features_size), data);
     }
     else
     {
@@ -436,6 +444,7 @@ int32_t GetNodeStringFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
         {
             py_graph->graph->client->GetNodeStringFeature(
                 std::span(reinterpret_cast<snark::NodeId *>(node_ids), node_ids_size),
+                std::span(reinterpret_cast<snark::Timestamp *>(timestamps), node_ids_size),
                 std::span(features, features_size), std::span(dimensions, node_ids_size * features_size), data);
         }
         catch (const std::exception &e)
@@ -450,7 +459,8 @@ int32_t GetNodeStringFeature(PyGraph *py_graph, NodeID *node_ids, size_t node_id
 }
 
 int32_t GetEdgeFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst_ids, Type *edge_types,
-                       size_t edges_size, Feature *features, size_t features_size, uint8_t *output, size_t output_size)
+                       size_t edges_size, Timestamp *timestamps, Feature *features, size_t features_size,
+                       uint8_t *output, size_t output_size)
 {
     if (py_graph->graph == nullptr)
     {
@@ -464,6 +474,7 @@ int32_t GetEdgeFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst
         py_graph->graph->graph->GetEdgeFeature(std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edges_size),
                                                std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edges_size),
                                                std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size),
+                                               std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edges_size),
                                                std::span(features_info), std::span(output, output_size));
         return 0;
     }
@@ -473,6 +484,7 @@ int32_t GetEdgeFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst
         py_graph->graph->client->GetEdgeFeature(std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edges_size),
                                                 std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edges_size),
                                                 std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size),
+                                                std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edges_size),
                                                 std::span(features_info), std::span(output, output_size));
         return 0;
     }
@@ -484,7 +496,7 @@ int32_t GetEdgeFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst
 }
 
 int32_t GetEdgeSparseFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst_ids, Type *edge_types,
-                             size_t edges_size, Feature *features, size_t features_size,
+                             size_t edges_size, Timestamp *timestamps, Feature *features, size_t features_size,
                              GetSparseFeaturesCallback callback)
 {
     if (py_graph->graph == nullptr)
@@ -501,14 +513,14 @@ int32_t GetEdgeSparseFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
     std::vector<const int64_t *> indices_ptrs;
     std::vector<size_t> indices_sizes;
     std::vector<const uint8_t *> data_ptrs;
-    std::vector<size_t> data_sizes;
 
     if (py_graph->graph->graph)
     {
         py_graph->graph->graph->GetEdgeSparseFeature(
             std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edges_size),
             std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edges_size),
-            std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size), std::span(features, features_size),
+            std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edges_size), std::span(features, features_size),
             std::span(dimensions), indices, data);
     }
 
@@ -519,8 +531,9 @@ int32_t GetEdgeSparseFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
             py_graph->graph->client->GetEdgeSparseFeature(
                 std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edges_size),
                 std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edges_size),
-                std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size), std::span(features, features_size),
-                std::span(dimensions), indices, data);
+                std::span(reinterpret_cast<snark::Type *>(edge_types), edges_size),
+                std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edges_size),
+                std::span(features, features_size), std::span(dimensions), indices, data);
         }
         catch (const std::exception &e)
         {
@@ -529,6 +542,7 @@ int32_t GetEdgeSparseFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
         }
     }
 
+    std::vector<size_t> data_sizes;
     for (size_t i = 0; i < features_size; ++i)
     {
         indices_ptrs.emplace_back(indices[i].data());
@@ -542,8 +556,8 @@ int32_t GetEdgeSparseFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
 }
 
 int32_t GetEdgeStringFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *edge_dst_ids, Type *edge_types,
-                             size_t edge_size, Feature *features, size_t features_size, int64_t *dimensions,
-                             GetStringFeaturesCallback callback)
+                             size_t edge_size, Timestamp *timestamps, Feature *features, size_t features_size,
+                             int64_t *dimensions, GetStringFeaturesCallback callback)
 {
     if (py_graph->graph == nullptr)
     {
@@ -557,7 +571,8 @@ int32_t GetEdgeStringFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
         py_graph->graph->graph->GetEdgeStringFeature(
             std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edge_size),
             std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edge_size),
-            std::span(reinterpret_cast<snark::Type *>(edge_types), edge_size), std::span(features, features_size),
+            std::span(reinterpret_cast<snark::Type *>(edge_types), edge_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edge_size), std::span(features, features_size),
             std::span(dimensions, features_size * edge_size), data);
     }
 
@@ -568,8 +583,9 @@ int32_t GetEdgeStringFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
             py_graph->graph->client->GetEdgeStringFeature(
                 std::span(reinterpret_cast<snark::NodeId *>(edge_src_ids), edge_size),
                 std::span(reinterpret_cast<snark::NodeId *>(edge_dst_ids), edge_size),
-                std::span(reinterpret_cast<snark::Type *>(edge_types), edge_size), std::span(features, features_size),
-                std::span(dimensions, features_size * edge_size), data);
+                std::span(reinterpret_cast<snark::Type *>(edge_types), edge_size),
+                std::span(reinterpret_cast<snark::Timestamp *>(timestamps), edge_size),
+                std::span(features, features_size), std::span(dimensions, features_size * edge_size), data);
         }
         catch (const std::exception &e)
         {
@@ -582,8 +598,8 @@ int32_t GetEdgeStringFeature(PyGraph *py_graph, NodeID *edge_src_ids, NodeID *ed
     return 0;
 }
 
-int32_t GetNeighborsInternal(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Type *in_edge_types,
-                             size_t in_edge_types_size, uint64_t *out_neighbor_counts,
+int32_t GetNeighborsInternal(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Timestamp *timestamps,
+                             Type *in_edge_types, size_t in_edge_types_size, uint64_t *out_neighbor_counts,
                              std::vector<NodeID> &out_neighbor_ids, std::vector<Type> &out_edge_types,
                              std::vector<float> &out_edge_weights)
 {
@@ -598,7 +614,8 @@ int32_t GetNeighborsInternal(PyGraph *py_graph, NodeID *in_node_ids, size_t in_n
     {
         py_graph->graph->graph->FullNeighbor(
             std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), out_neighbor_ids,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), out_neighbor_ids,
             out_edge_types, out_edge_weights, std::span(out_neighbor_counts, in_node_ids_size));
         return 0;
     }
@@ -607,7 +624,8 @@ int32_t GetNeighborsInternal(PyGraph *py_graph, NodeID *in_node_ids, size_t in_n
     {
         py_graph->graph->client->FullNeighbor(
             std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), out_neighbor_ids,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), out_neighbor_ids,
             out_edge_types, out_edge_weights, std::span(out_neighbor_counts, in_node_ids_size));
 
         return 0;
@@ -621,8 +639,8 @@ int32_t GetNeighborsInternal(PyGraph *py_graph, NodeID *in_node_ids, size_t in_n
     return 0;
 }
 
-int32_t NeighborCount(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Type *in_edge_types,
-                      size_t in_edge_types_size, uint64_t *out_neighbor_counts)
+int32_t NeighborCount(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Timestamp *timestamps,
+                      Type *in_edge_types, size_t in_edge_types_size, uint64_t *out_neighbor_counts)
 {
     if (py_graph->graph == nullptr)
     {
@@ -635,6 +653,7 @@ int32_t NeighborCount(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids
         py_graph->graph->graph->NeighborCount(
             std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
             std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_edge_types_size),
             std::span(out_neighbor_counts, in_node_ids_size));
         return 0;
     }
@@ -644,6 +663,7 @@ int32_t NeighborCount(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids
         py_graph->graph->client->NeighborCount(
             std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
             std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_edge_types_size),
             std::span(out_neighbor_counts, in_node_ids_size));
         return 0;
     }
@@ -656,15 +676,17 @@ int32_t NeighborCount(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids
     return 0;
 }
 
-int32_t GetNeighbors(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Type *in_edge_types,
-                     size_t in_edge_types_size, uint64_t *out_neighbor_counts, GetNeighborsCallback callback)
+int32_t GetNeighbors(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_size, Timestamp *timestamps,
+                     Type *in_edge_types, size_t in_edge_types_size, uint64_t *out_neighbor_counts,
+                     GetNeighborsCallback callback)
 {
     std::vector<snark::NodeId> neighbor_ids;
     std::vector<snark::Type> edge_types;
     std::vector<float> edge_weights;
     std::fill_n(out_neighbor_counts, in_node_ids_size, 0);
-    const auto res = GetNeighborsInternal(py_graph, in_node_ids, in_node_ids_size, in_edge_types, in_edge_types_size,
-                                          out_neighbor_counts, neighbor_ids, edge_types, edge_weights);
+    const auto res =
+        GetNeighborsInternal(py_graph, in_node_ids, in_node_ids_size, timestamps, in_edge_types, in_edge_types_size,
+                             out_neighbor_counts, neighbor_ids, edge_types, edge_weights);
     if (res != 0)
     {
         return res;
@@ -675,9 +697,9 @@ int32_t GetNeighbors(PyGraph *py_graph, NodeID *in_node_ids, size_t in_node_ids_
 }
 
 int32_t WeightedSampleNeighbor(PyGraph *py_graph, int64_t seed, NodeID *in_node_ids, size_t in_node_ids_size,
-                               Type *in_edge_types, size_t in_edge_types_size, size_t count, NodeID *out_neighbor_ids,
-                               Type *out_types, float *out_weights, NodeID default_node_id, float default_weight,
-                               Type default_edge_type)
+                               Timestamp *timestamps, Type *in_edge_types, size_t in_edge_types_size, size_t count,
+                               NodeID *out_neighbor_ids, Type *out_types, float *out_weights, NodeID default_node_id,
+                               float default_weight, Type default_edge_type)
 {
     if (py_graph->graph == nullptr)
     {
@@ -691,7 +713,8 @@ int32_t WeightedSampleNeighbor(PyGraph *py_graph, int64_t seed, NodeID *in_node_
     {
         py_graph->graph->graph->SampleNeighbor(
             seed, std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), count,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), count,
             std::span(reinterpret_cast<snark::NodeId *>(out_neighbor_ids), out_size),
             std::span(reinterpret_cast<snark::Type *>(out_types), out_size),
             std::span(reinterpret_cast<float *>(out_weights), out_size), std::span(total_neighbor_weights),
@@ -704,7 +727,8 @@ int32_t WeightedSampleNeighbor(PyGraph *py_graph, int64_t seed, NodeID *in_node_
     {
         py_graph->graph->client->WeightedSampleNeighbor(
             seed, std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), count,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), count,
             std::span(reinterpret_cast<snark::NodeId *>(out_neighbor_ids), out_size),
             std::span(reinterpret_cast<snark::Type *>(out_types), out_size),
             std::span(reinterpret_cast<float *>(out_weights), out_size), default_node_id, default_weight,
@@ -720,8 +744,9 @@ int32_t WeightedSampleNeighbor(PyGraph *py_graph, int64_t seed, NodeID *in_node_
 }
 
 int32_t UniformSampleNeighbor(PyGraph *py_graph, bool without_replacement, int64_t seed, NodeID *in_node_ids,
-                              size_t in_node_ids_size, Type *in_edge_types, size_t in_edge_types_size, size_t count,
-                              NodeID *out_neighbor_ids, Type *out_types, NodeID default_node_id, Type default_edge_type)
+                              size_t in_node_ids_size, Timestamp *timestamps, Type *in_edge_types,
+                              size_t in_edge_types_size, size_t count, NodeID *out_neighbor_ids, Type *out_types,
+                              NodeID default_node_id, Type default_edge_type)
 {
     if (py_graph->graph == nullptr)
     {
@@ -735,7 +760,8 @@ int32_t UniformSampleNeighbor(PyGraph *py_graph, bool without_replacement, int64
         std::vector<uint64_t> total_neighbor_counts(in_node_ids_size);
         py_graph->graph->graph->UniformSampleNeighbor(
             without_replacement, seed, std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), count,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), count,
             std::span(reinterpret_cast<snark::NodeId *>(out_neighbor_ids), out_size),
             std::span(reinterpret_cast<snark::Type *>(out_types), out_size), std::span(total_neighbor_counts),
             default_node_id, default_edge_type);
@@ -747,7 +773,8 @@ int32_t UniformSampleNeighbor(PyGraph *py_graph, bool without_replacement, int64
     {
         py_graph->graph->client->UniformSampleNeighbor(
             without_replacement, seed, std::span(reinterpret_cast<snark::NodeId *>(in_node_ids), in_node_ids_size),
-            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size), count,
+            std::span(reinterpret_cast<snark::Type *>(in_edge_types), in_edge_types_size),
+            std::span(reinterpret_cast<snark::Timestamp *>(timestamps), in_node_ids_size), count,
             std::span(reinterpret_cast<snark::NodeId *>(out_neighbor_ids), out_size),
             std::span(reinterpret_cast<snark::Type *>(out_types), out_size), default_node_id, default_edge_type);
 
@@ -762,8 +789,8 @@ int32_t UniformSampleNeighbor(PyGraph *py_graph, bool without_replacement, int64
 
 // Expected length of out_node_ids buffer is (walk_length + 1) * in_node_ids_size
 int32_t RandomWalk(PyGraph *py_graph, int64_t seed, float p, float q, NodeID default_node_id, NodeID *in_node_ids,
-                   size_t in_node_ids_size, Type *in_edge_types, size_t in_edge_types_size, size_t walk_length,
-                   NodeID *out_node_ids)
+                   size_t in_node_ids_size, Timestamp *timestamps, Type *in_edge_types, size_t in_edge_types_size,
+                   size_t walk_length, NodeID *out_node_ids)
 {
     if (py_graph->graph == nullptr)
     {
@@ -815,8 +842,8 @@ int32_t RandomWalk(PyGraph *py_graph, int64_t seed, float p, float q, NodeID def
         neighbors.resize(0);
         weights.resize(0);
         types.resize(0);
-        GetNeighborsInternal(py_graph, curr_nodes.data(), curr_nodes.size(), in_edge_types, in_edge_types_size,
-                             curr_counts.data(), neighbors, types, weights);
+        GetNeighborsInternal(py_graph, curr_nodes.data(), curr_nodes.size(), timestamps, in_edge_types,
+                             in_edge_types_size, curr_counts.data(), neighbors, types, weights);
         size_t nb_offset = 0;
         for (size_t index = 0; index < in_node_ids_size; ++index)
         {

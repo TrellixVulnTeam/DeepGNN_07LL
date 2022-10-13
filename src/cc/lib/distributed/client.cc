@@ -50,7 +50,15 @@ struct AsyncClientCall
 
 // Index to look up feature coordinates to return them in sorted order.
 // shard, index offset, index count, value offset, value count
-using SparseFeatureIndex = std::tuple<size_t, int, int, int, int>;
+struct SparseFeatureIndex
+{
+    size_t shard;
+    int index_offset;
+    int index_count;
+    int value_offset;
+    int value_count;
+    snark::Timestamp timestamp;
+};
 
 void WaitForFutures(std::vector<std::future<void>> &futures)
 {
@@ -59,42 +67,49 @@ void WaitForFutures(std::vector<std::future<void>> &futures)
         f.get();
     }
 }
-void ExtractFeatures(const std::vector<std::vector<SparseFeatureIndex>> &response_index,
+
+void ExtractFeatures(const std::vector<SparseFeatureIndex> &response_index,
                      const std::vector<snark::SparseFeaturesReply> &replies, std::span<int64_t> out_dimensions,
                      std::vector<std::vector<int64_t>> &out_indices, std::vector<std::vector<uint8_t>> &out_values,
                      size_t node_count)
 {
-    for (size_t feature_index = 0; feature_index < out_dimensions.size(); ++feature_index)
+    const size_t feature_count = out_dimensions.size();
+    for (size_t feature_index = 0; feature_index < feature_count; ++feature_index)
     {
         for (size_t node_index = 0; node_index < node_count; ++node_index)
         {
-            size_t shard;
-            int index_start, index_count, value_start, value_count;
-            std::tie(shard, index_start, index_count, value_start, value_count) =
-                response_index[node_index][feature_index];
-            if (replies[shard].indices().empty())
+            auto &response_index_item = response_index[node_index * feature_count + feature_index];
+            if (replies[response_index_item.shard].indices().empty())
             {
                 continue;
             }
-            std::copy_n(std::begin(replies[shard].indices()) + index_start, index_count,
-                        std::back_inserter(out_indices[feature_index]));
-            std::copy_n(std::begin(replies[shard].values()) + value_start, value_count,
-                        std::back_inserter(out_values[feature_index]));
+
+            std::copy_n(std::begin(replies[response_index_item.shard].indices()) + response_index_item.index_offset,
+                        response_index_item.index_count, std::back_inserter(out_indices[feature_index]));
+            std::copy_n(std::begin(replies[response_index_item.shard].values()) + response_index_item.value_offset,
+                        response_index_item.value_count, std::back_inserter(out_values[feature_index]));
         }
     }
 }
 
-void ExtractStringFeatures(const std::vector<std::pair<size_t, size_t>> &response_index,
+void ExtractStringFeatures(const std::vector<std::tuple<size_t, size_t, snark::Timestamp>> &response_index,
                            const std::vector<snark::StringFeaturesReply> &replies, std::span<int64_t> dimensions,
                            std::vector<uint8_t> &out_values)
 {
-    const auto total_size = std::accumulate(std::begin(dimensions), std::end(dimensions), int64_t(0));
-    out_values.reserve(total_size);
-    for (size_t feature_index = 0; feature_index < dimensions.size(); ++feature_index)
+    size_t feature_index = 0;
+    for (const auto &index : response_index)
     {
-        const auto &index = response_index[feature_index];
-        std::copy_n(std::begin(replies[index.first].values()) + index.second, dimensions[feature_index],
-                    std::back_inserter(out_values));
+        const auto response_id = std::get<0>(index);
+        const auto feature_offset = std::get<1>(index);
+        auto fst = std::begin(replies[response_id].values()) + feature_offset;
+        auto lst = fst + dimensions[feature_index];
+        ++feature_index;
+        if (feature_index == dimensions.size())
+        {
+            feature_index = 0;
+        }
+
+        out_values.insert(std::end(out_values), fst, lst);
     }
 }
 
@@ -108,8 +123,8 @@ void GetSparseFeature(const SparseRequest &request,
     std::vector<std::future<void>> futures;
     futures.reserve(engine_stubs.size());
     std::vector<snark::SparseFeaturesReply> replies(engine_stubs.size());
-    std::vector<std::vector<SparseFeatureIndex>> response_index(input_size,
-                                                                std::vector<SparseFeatureIndex>(feature_count));
+    std::vector<SparseFeatureIndex> response_index(input_size * feature_count, SparseFeatureIndex{.timestamp = -1});
+    std::mutex mtx;
 
     for (size_t shard = 0; shard < engine_stubs.size(); ++shard)
     {
@@ -130,7 +145,7 @@ void GetSparseFeature(const SparseRequest &request,
             throw std::runtime_error("Unknown request type for GetSparseFeature");
         }
 
-        call->callback = [&reply = replies[shard], &response_index, shard, out_dimensions]() {
+        call->callback = [&reply = replies[shard], &response_index, shard, out_dimensions, &mtx, feature_count]() {
             if (reply.indices().empty())
             {
                 return;
@@ -146,6 +161,7 @@ void GetSparseFeature(const SparseRequest &request,
                     continue;
                 }
 
+                std::lock_guard lock(mtx);
                 if (out_dimensions[feature_index] != 0 && reply.dimensions(feature_index) != 0 &&
                     out_dimensions[feature_index] != reply.dimensions(feature_index))
                 {
@@ -164,15 +180,20 @@ void GetSparseFeature(const SparseRequest &request,
                      node_offset += feature_dim, value_offset += value_increment)
                 {
                     const auto item_index = reply.indices(node_offset);
-                    int64_t count = std::get<2>(response_index[item_index][feature_index]);
-                    if (count == 0)
+                    auto &response_index_item = response_index[item_index * feature_count + feature_index];
+                    if (reply.timestamps(item_index * feature_count + feature_index) <= response_index_item.timestamp)
                     {
-                        std::get<0>(response_index[item_index][feature_index]) = shard;
-                        std::get<1>(response_index[item_index][feature_index]) = node_offset;
-                        std::get<3>(response_index[item_index][feature_index]) = value_offset;
+                        continue;
                     }
-                    std::get<2>(response_index[item_index][feature_index]) += feature_dim;
-                    std::get<4>(response_index[item_index][feature_index]) += value_increment;
+
+                    if (response_index_item.index_count == 0)
+                    {
+                        response_index_item.shard = shard;
+                        response_index_item.index_offset = node_offset;
+                        response_index_item.value_offset = value_offset;
+                    }
+                    response_index_item.index_count += feature_dim;
+                    response_index_item.value_count += value_increment;
                 }
             }
         };
@@ -197,7 +218,8 @@ void GetStringFeature(const SparseRequest &request,
     std::vector<std::future<void>> futures;
     futures.reserve(engine_stubs.size());
     std::vector<snark::StringFeaturesReply> replies(engine_stubs.size());
-    std::vector<std::pair<size_t, size_t>> response_index(input_size * feature_count);
+    std::vector<std::tuple<size_t, size_t, snark::Timestamp>> response_index(input_size * feature_count, {0, 0, -1});
+    std::mutex mtx;
 
     for (size_t shard = 0; shard < engine_stubs.size(); ++shard)
     {
@@ -218,12 +240,13 @@ void GetStringFeature(const SparseRequest &request,
             throw std::runtime_error("Unknown request type for GetStringFeature");
         }
 
-        call->callback = [&reply = replies[shard], &response_index, shard, out_dimensions]() {
+        call->callback = [&reply = replies[shard], &response_index, shard, out_dimensions, &mtx]() {
             if (reply.values().empty())
             {
                 return;
             }
             int64_t value_offset = 0;
+            int64_t ts_index = 0;
             for (int64_t feature_index = 0; feature_index < reply.dimensions().size(); ++feature_index)
             {
                 const auto dim = reply.dimensions(feature_index);
@@ -232,9 +255,14 @@ void GetStringFeature(const SparseRequest &request,
                     continue;
                 }
 
-                // it is ok to not to synchronize here, because feature data is the same across shards.
-                response_index[feature_index] = {shard, value_offset};
-                out_dimensions[feature_index] = dim;
+                std::lock_guard lock(mtx);
+                const auto ts = reply.timestamps(ts_index);
+                ++ts_index;
+                if (std::get<2>(response_index[feature_index]) <= ts)
+                {
+                    response_index[feature_index] = {shard, value_offset, ts};
+                    out_dimensions[feature_index] = dim;
+                }
                 value_offset += dim;
             }
         };
@@ -324,19 +352,23 @@ std::function<void()> GRPCClient::AsyncCompleteRpc(size_t index)
     };
 }
 
-void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> output, Type default_type)
+void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
+                             std::span<Type> output, Type default_type)
 {
     assert(node_ids.size() == output.size());
 
     NodeTypesRequest request;
     const auto node_len = node_ids.size();
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
+
     std::vector<std::future<void>> futures;
     futures.reserve(m_engine_stubs.size());
     std::vector<NodeTypesReply> replies(m_engine_stubs.size());
+    std::mutex mtx;
 
     // Vector<bool> is not thread safe for our use case, because it's storage is not contiguous
-    auto found = std::make_unique<bool[]>(node_len);
+    std::vector<snark::Timestamp> types_timestamps(node_len, -1);
     for (size_t shard = 0; shard < m_engine_stubs.size(); ++shard)
     {
         auto *call = new AsyncClientCall();
@@ -344,18 +376,25 @@ void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> o
         auto response_reader =
             m_engine_stubs[shard]->PrepareAsyncGetNodeTypes(&call->context, request, NextCompletionQueue());
 
-        call->callback = [&reply = replies[shard], output, &found]() {
+        call->callback = [&reply = replies[shard], output, &types_timestamps, &mtx]() {
             if (reply.offsets().empty())
             {
                 return;
             }
 
             auto curr_type_reply = std::begin(reply.types());
+            auto curr_ts_reply = std::begin(reply.timestamps());
+            std::lock_guard lock(mtx);
             for (auto index : reply.offsets())
             {
-                output[index] = *curr_type_reply;
-                found[index] = true;
+                if (types_timestamps[index] < *curr_ts_reply)
+                {
+                    types_timestamps[index] = *curr_ts_reply;
+                    output[index] = *curr_type_reply;
+                }
+
                 ++curr_type_reply;
+                ++curr_ts_reply;
             }
         };
 
@@ -369,15 +408,15 @@ void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> o
     WaitForFutures(futures);
     for (size_t i = 0; i < node_len; ++i)
     {
-        if (!found[i])
+        if (types_timestamps[i] < 0)
         {
             output[i] = default_type;
         }
     }
 }
 
-void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<FeatureMeta> features,
-                                std::span<uint8_t> output)
+void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
+                                std::span<FeatureMeta> features, std::span<uint8_t> output)
 {
     assert(std::accumulate(std::begin(features), std::end(features), size_t(0),
                            [](size_t val, const auto &f) { return val + f.second; }) *
@@ -387,19 +426,26 @@ void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<Feat
     NodeFeaturesRequest request;
     const auto node_len = node_ids.size();
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
+    size_t curr_feature_prefix = 0;
+    std::vector<size_t> feature_len_prefix;
+    feature_len_prefix.reserve(features.size());
+
     for (const auto &feature : features)
     {
         auto wire_feature = request.add_features();
         wire_feature->set_id(feature.first);
         wire_feature->set_size(feature.second);
+        feature_len_prefix.emplace_back(curr_feature_prefix);
+        curr_feature_prefix += feature.second;
     }
     const size_t fv_size = output.size() / node_len;
     std::vector<std::future<void>> futures;
     futures.reserve(m_engine_stubs.size());
     std::vector<NodeFeaturesReply> replies(m_engine_stubs.size());
-
-    // Vector<bool> is not thread safe for our use case, because it's storage is not contiguous
-    auto found = std::make_unique<bool[]>(node_len);
+    std::mutex mtx;
+    std::vector<std::tuple<int32_t, int32_t, snark::Timestamp>> response_index(node_ids.size() * features.size(),
+                                                                               {-1, -1, -1});
     for (size_t shard = 0; shard < m_engine_stubs.size(); ++shard)
     {
         auto *call = new AsyncClientCall();
@@ -407,20 +453,30 @@ void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<Feat
         auto response_reader =
             m_engine_stubs[shard]->PrepareAsyncGetNodeFeatures(&call->context, request, NextCompletionQueue());
 
-        call->callback = [&reply = replies[shard], output, &found, fv_size]() {
+        call->callback = [&reply = replies[shard], shard, &mtx, &features, &response_index]() {
             if (reply.offsets().empty())
             {
                 return;
             }
 
-            auto curr_feature_out = std::begin(output);
-            // Use c_str since string iterators can process wide charachters on windows.
-            auto curr_feature_reply = reply.feature_values().c_str();
-            for (auto index : reply.offsets())
+            std::lock_guard lock(mtx);
+            int32_t timestamp_index = 0;
+            for (int32_t node_index = 0; node_index < reply.offsets().size(); ++node_index)
             {
-                std::copy(curr_feature_reply, curr_feature_reply + fv_size, curr_feature_out + fv_size * index);
-                curr_feature_reply += fv_size;
-                found[index] = true;
+                const auto index = reply.offsets(node_index) * features.size();
+                for (int32_t feature_index = 0; feature_index < int32_t(features.size()); ++feature_index)
+                {
+                    const auto ts = reply.timestamps(timestamp_index);
+
+                    // pick latest value across all shards.
+                    if (std::get<2>(response_index[index + feature_index]) <= ts)
+                    {
+                        response_index[index + feature_index] =
+                            std::make_tuple(int32_t(shard), int32_t(node_index), ts);
+                    }
+
+                    ++timestamp_index;
+                }
             }
         };
 
@@ -432,23 +488,42 @@ void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<Feat
     }
 
     WaitForFutures(futures);
-    auto values = std::begin(output);
-    for (size_t i = 0; i < node_len; ++i)
+
+    for (size_t i = 0; i < response_index.size(); ++i)
     {
-        if (found[i])
+        snark::Timestamp ts;
+        int32_t node_index, shard_index;
+        std::tie(shard_index, node_index, ts) = response_index[i];
+    }
+
+    auto values = std::begin(output);
+    for (size_t node_index = 0; node_index < node_len; ++node_index)
+    {
+        for (size_t feature_index = 0; feature_index < features.size(); ++feature_index)
         {
-            values += fv_size;
-        }
-        else
-        {
-            values = std::fill_n(values, fv_size, 0);
+            snark::Timestamp ts;
+            int32_t node_sub_index, shard_index;
+
+            std::tie(shard_index, node_sub_index, ts) = response_index[node_index * features.size() + feature_index];
+            if (ts >= 0)
+            {
+                // Use c_str since string iterators can process wide charachters on windows.
+                auto reply_feature_values = replies[shard_index].feature_values().c_str();
+                values =
+                    std::copy_n(reply_feature_values + node_sub_index * fv_size + feature_len_prefix[feature_index],
+                                features[feature_index].second, values);
+            }
+            else
+            {
+                values = std::fill_n(values, features[feature_index].second, 0);
+            }
         }
     }
 }
 
 void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<const NodeId> edge_dst_ids,
-                                std::span<const Type> edge_types, std::span<FeatureMeta> features,
-                                std::span<uint8_t> output)
+                                std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
+                                std::span<FeatureMeta> features, std::span<uint8_t> output)
 {
     const auto len = edge_types.size();
     assert(std::accumulate(std::begin(features), std::end(features), size_t(0),
@@ -463,6 +538,8 @@ void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<
     *request.mutable_node_ids() = {std::begin(edge_src_ids), std::end(edge_src_ids)};
     request.mutable_node_ids()->Add(std::begin(edge_dst_ids), std::end(edge_dst_ids));
     request.mutable_types()->Add(std::begin(edge_types), std::end(edge_types));
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
+
     for (const auto &feature : features)
     {
         auto wire_feature = request.add_features();
@@ -474,6 +551,9 @@ void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<
     std::vector<std::future<void>> futures;
     futures.reserve(m_engine_stubs.size());
     std::vector<EdgeFeaturesReply> replies(m_engine_stubs.size());
+    std::mutex mtx;
+    // std::vector<std::tuple<int32_t, int32_t, snark::Timestamp>> response_index(len * features.size(),
+    //                                                                       {-1, -1, -1});
 
     // Vector<bool> is not thread safe for our use case, because it's storage is not contiguous
     auto found = std::make_unique<bool[]>(len);
@@ -523,8 +603,9 @@ void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<
     }
 }
 
-void GRPCClient::GetNodeSparseFeature(std::span<const NodeId> node_ids, std::span<const FeatureId> features,
-                                      std::span<int64_t> out_dimensions, std::vector<std::vector<int64_t>> &out_indices,
+void GRPCClient::GetNodeSparseFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
+                                      std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
+                                      std::vector<std::vector<int64_t>> &out_indices,
                                       std::vector<std::vector<uint8_t>> &out_values)
 {
     assert(out_indices.size() == features.size());
@@ -535,14 +616,16 @@ void GRPCClient::GetNodeSparseFeature(std::span<const NodeId> node_ids, std::spa
     NodeSparseFeaturesRequest request;
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_feature_ids() = {std::begin(features), std::end(features)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
 
     GetSparseFeature(request, m_engine_stubs, node_ids.size(), features.size(), out_dimensions, out_indices, out_values,
                      std::bind(&GRPCClient::NextCompletionQueue, this));
 }
 
 void GRPCClient::GetEdgeSparseFeature(std::span<const NodeId> edge_src_ids, std::span<const NodeId> edge_dst_ids,
-                                      std::span<const Type> edge_types, std::span<const FeatureId> features,
-                                      std::span<int64_t> out_dimensions, std::vector<std::vector<int64_t>> &out_indices,
+                                      std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
+                                      std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
+                                      std::vector<std::vector<int64_t>> &out_indices,
                                       std::vector<std::vector<uint8_t>> &out_values)
 {
     const auto len = edge_types.size();
@@ -554,24 +637,28 @@ void GRPCClient::GetEdgeSparseFeature(std::span<const NodeId> edge_src_ids, std:
     request.mutable_node_ids()->Add(std::begin(edge_dst_ids), std::end(edge_dst_ids));
     request.mutable_types()->Add(std::begin(edge_types), std::end(edge_types));
     *request.mutable_feature_ids() = {std::begin(features), std::end(features)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
 
     GetSparseFeature(request, m_engine_stubs, len, features.size(), out_dimensions, out_indices, out_values,
                      std::bind(&GRPCClient::NextCompletionQueue, this));
 }
 
-void GRPCClient::GetNodeStringFeature(std::span<const NodeId> node_ids, std::span<const FeatureId> features,
-                                      std::span<int64_t> out_dimensions, std::vector<uint8_t> &out_values)
+void GRPCClient::GetNodeStringFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
+                                      std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
+                                      std::vector<uint8_t> &out_values)
 {
     NodeSparseFeaturesRequest request;
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_feature_ids() = {std::begin(features), std::end(features)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
     GetStringFeature(request, m_engine_stubs, node_ids.size(), features.size(), out_dimensions, out_values,
                      std::bind(&GRPCClient::NextCompletionQueue, this));
 }
 
 void GRPCClient::GetEdgeStringFeature(std::span<const NodeId> edge_src_ids, std::span<const NodeId> edge_dst_ids,
-                                      std::span<const Type> edge_types, std::span<const FeatureId> features,
-                                      std::span<int64_t> out_dimensions, std::vector<uint8_t> &out_values)
+                                      std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
+                                      std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
+                                      std::vector<uint8_t> &out_values)
 {
     const auto len = edge_types.size();
     assert(len == edge_src_ids.size());
@@ -582,18 +669,20 @@ void GRPCClient::GetEdgeStringFeature(std::span<const NodeId> edge_src_ids, std:
     request.mutable_node_ids()->Add(std::begin(edge_dst_ids), std::end(edge_dst_ids));
     request.mutable_types()->Add(std::begin(edge_types), std::end(edge_types));
     *request.mutable_feature_ids() = {std::begin(features), std::end(features)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
 
     GetStringFeature(request, m_engine_stubs, len, features.size(), out_dimensions, out_values,
                      std::bind(&GRPCClient::NextCompletionQueue, this));
 }
 
 void GRPCClient::NeighborCount(std::span<const NodeId> node_ids, std::span<const Type> edge_types,
-                               std::span<uint64_t> output_neighbor_counts)
+                               std::span<const snark::Timestamp> timestamps, std::span<uint64_t> output_neighbor_counts)
 {
     GetNeighborsRequest request;
 
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_edge_types() = {std::begin(edge_types), std::end(edge_types)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
 
     std::vector<std::future<void>> futures;
     std::vector<GetNeighborCountsReply> replies(std::size(m_engine_stubs));
@@ -638,13 +727,15 @@ void GRPCClient::NeighborCount(std::span<const NodeId> node_ids, std::span<const
 }
 
 void GRPCClient::FullNeighbor(std::span<const NodeId> node_ids, std::span<const Type> edge_types,
-                              std::vector<NodeId> &output_nodes, std::vector<Type> &output_types,
-                              std::vector<float> &output_weights, std::span<uint64_t> output_neighbor_counts)
+                              std::span<const snark::Timestamp> timestamps, std::vector<NodeId> &output_nodes,
+                              std::vector<Type> &output_types, std::vector<float> &output_weights,
+                              std::span<uint64_t> output_neighbor_counts)
 {
     GetNeighborsRequest request;
 
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_edge_types() = {std::begin(edge_types), std::end(edge_types)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
     std::vector<std::future<void>> futures;
     std::vector<GetNeighborsReply> replies(std::size(m_engine_stubs));
     std::vector<size_t> reply_offsets(std::size(m_engine_stubs));
@@ -712,8 +803,8 @@ void GRPCClient::FullNeighbor(std::span<const NodeId> node_ids, std::span<const 
 }
 
 void GRPCClient::WeightedSampleNeighbor(int64_t seed, std::span<const NodeId> node_ids,
-                                        std::span<const Type> edge_types, size_t count,
-                                        std::span<NodeId> output_neighbors, std::span<Type> output_types,
+                                        std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
+                                        size_t count, std::span<NodeId> output_neighbors, std::span<Type> output_types,
                                         std::span<float> output_weights, NodeId default_node_id, float default_weight,
                                         Type default_edge_type)
 {
@@ -724,6 +815,7 @@ void GRPCClient::WeightedSampleNeighbor(int64_t seed, std::span<const NodeId> no
     WeightedSampleNeighborsRequest request;
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_edge_types() = {std::begin(edge_types), std::end(edge_types)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
     request.set_count(count);
     request.set_default_node_id(default_node_id);
     request.set_default_node_weight(default_weight);
@@ -767,7 +859,7 @@ void GRPCClient::WeightedSampleNeighbor(int64_t seed, std::span<const NodeId> no
             // We need to lock the merge in case some nodes are present in multiple
             // servers(a super node with lots of neighbors). To keep contention low
             // we'll use a global lock per response instead of per node.
-            std::lock_guard guard(mtx);
+            std::lock_guard lock(mtx);
 
             // The strategy is to zip nodes from server response matching to the input
             // nodes.
@@ -840,8 +932,8 @@ void GRPCClient::WeightedSampleNeighbor(int64_t seed, std::span<const NodeId> no
 }
 
 void GRPCClient::UniformSampleNeighbor(bool without_replacement, int64_t seed, std::span<const NodeId> node_ids,
-                                       std::span<const Type> edge_types, size_t count,
-                                       std::span<NodeId> output_neighbors, std::span<Type> output_types,
+                                       std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
+                                       size_t count, std::span<NodeId> output_neighbors, std::span<Type> output_types,
                                        NodeId default_node_id, Type default_type)
 {
     snark::Xoroshiro128PlusGenerator engine(seed);
@@ -851,6 +943,7 @@ void GRPCClient::UniformSampleNeighbor(bool without_replacement, int64_t seed, s
     UniformSampleNeighborsRequest request;
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
     *request.mutable_edge_types() = {std::begin(edge_types), std::end(edge_types)};
+    *request.mutable_timestamps() = {std::begin(timestamps), std::end(timestamps)};
     request.set_count(count);
     request.set_default_node_id(default_node_id);
     request.set_default_edge_type(default_type);
@@ -890,7 +983,7 @@ void GRPCClient::UniformSampleNeighbor(bool without_replacement, int64_t seed, s
             // We need to lock the merge in case some nodes are present in multiple
             // servers(a super node with lots of neighbors). To keep contention low
             // we'll use a global lock per response instead of per node.
-            std::lock_guard guard(mtx);
+            std::lock_guard lock(mtx);
 
             // The strategy is to zip nodes from server response matching to the input
             // nodes.

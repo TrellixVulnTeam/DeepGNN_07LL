@@ -62,7 +62,7 @@ static void BM_NODE_FEATURES(benchmark::State &state, snark::PartitionStorageTyp
     for (auto _ : state)
     {
         const size_t batch_size = state.range(0);
-        g_client->GetNodeFeature(std::span(input_nodes).subspan(offset, batch_size), std::span(features),
+        g_client->GetNodeFeature(std::span(input_nodes).subspan(offset, batch_size), {}, std::span(features),
                                  std::span(feature_holder).subspan(0, fv_size * sizeof(float) * batch_size));
         offset += batch_size;
         if (offset + batch_size > max_count)
@@ -98,7 +98,7 @@ static void BM_NODE_STRING_FEATURES(benchmark::State &state, snark::PartitionSto
     {
         std::vector<uint8_t> feature_data;
         const size_t batch_size = state.range(0);
-        g_client->GetNodeStringFeature(std::span(input_nodes).subspan(offset, batch_size), std::span(features),
+        g_client->GetNodeStringFeature(std::span(input_nodes).subspan(offset, batch_size), {}, std::span(features),
                                        std::span(std::begin(dimensions), std::begin(dimensions) + batch_size),
                                        feature_data);
         offset += batch_size;
