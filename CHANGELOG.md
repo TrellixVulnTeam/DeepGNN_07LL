@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add debug mode to MultiWorkersConverter, using debug=True will now disable multiprocessing and show error messages.
 
+- Temporal graph support.
+
 ### Changed
 - Rename function deepgnn.graph_engine.data.to_json_node -> deepgnn.graph_engine.data.to_edge_list_node and update functionality accordingly.
 
